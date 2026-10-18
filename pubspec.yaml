@@ -1,7 +1,7 @@
 name: slrt_apps
 description: Aplikasi PT SLRT - Density SLRT, Radiation Log, Dokumen & Regulasi.
 publish_to: 'none'
-version: 1.14.1+25
+version: 1.15.5+31
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
