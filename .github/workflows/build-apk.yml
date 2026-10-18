@@ -1,0 +1,116 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Buat folder Android
+        run: |
+          flutter create . --platforms=android --project-name slrt_apps --org com.slrt
+          rm -rf test
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.INTERNET' $M || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' $M
+          sed -i 's|android:label="slrt_apps"|android:label="SLRT Apps"|' $M
+          if grep -q '<queries>' $M; then
+            sed -i 's|<queries>|<queries>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>|' $M
+          else
+            sed -i 's|</manifest>|    <queries><intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent></queries>\n</manifest>|' $M
+          fi
+          cat $M
+
+      - name: Atur compileSdk Android ke 36
+        run: |
+          for G in android/app/build.gradle.kts android/app/build.gradle; do
+            [ -f "$G" ] || continue
+            sed -i -E 's/compileSdk(Version)? *=? *flutter\.compileSdkVersion/compileSdk = 36/' "$G"
+            sed -i -E 's/compileSdkVersion +flutter\.compileSdkVersion/compileSdkVersion 36/' "$G"
+            sed -i -E 's/targetSdk(Version)? *=? *flutter\.targetSdkVersion/targetSdk = 36/' "$G"
+            sed -i -E 's/targetSdkVersion +flutter\.targetSdkVersion/targetSdkVersion 36/' "$G"
+            grep -nE 'compileSdk|targetSdk|minSdk' "$G"
+          done
+          # Paksa semua plugin (mis. file_picker yang masih android-34) memakai compileSdk 36
+          R=android/build.gradle.kts
+          if [ -f "$R" ]; then
+            cat > /tmp/sdkfix.kts <<'KTS'
+          subprojects {
+              afterEvaluate {
+                  if (plugins.hasPlugin("com.android.library") || plugins.hasPlugin("com.android.application")) {
+                      extensions.getByName("android").withGroovyBuilder { "compileSdkVersion"(36) }
+                  }
+              }
+          }
+          KTS
+            cat /tmp/sdkfix.kts "$R" > /tmp/root.kts && mv /tmp/root.kts "$R"
+          fi
+          R=android/build.gradle
+          if [ -f "$R" ]; then
+            printf "subprojects {\n    afterEvaluate { p ->\n        if (p.hasProperty('android')) { p.android.compileSdkVersion 36 }\n    }\n}\n" > /tmp/sdkfix.gradle
+            cat /tmp/sdkfix.gradle "$R" > /tmp/root.gradle && mv /tmp/root.gradle "$R"
+          fi
+          head -20 android/build.gradle* || true
+
+      - name: Aturan R8 agar plugin tidak terhapus saat build release
+        run: |
+          cat >> android/app/proguard-rules.pro <<'PRO'
+          # Plugin Flutter dipanggil lewat JNI/Pigeon - jangan dihapus atau diganti nama oleh R8
+          -keep class io.flutter.plugins.** { *; }
+          -keep class io.flutter.plugin.** { *; }
+          -keep class dev.flutter.** { *; }
+          -keep class com.mr.flutter.plugin.filepicker.** { *; }
+          -keep class com.crazecoder.openfile.** { *; }
+          -keep class kotlin.** { *; }
+          -keep class kotlinx.** { *; }
+          -keep class androidx.** { *; }
+          -keepclassmembers class * { @androidx.annotation.Keep *; }
+          -dontwarn io.flutter.**
+          -dontwarn kotlinx.coroutines.**
+          -dontwarn kotlin.**
+          PRO
+          cat android/app/proguard-rules.pro
+          # Matikan perampingan kode (R8) untuk build release: APK sedikit lebih besar tapi aman
+          G=android/app/build.gradle.kts
+          if [ -f "$G" ]; then
+            sed -i -E 's/^( *)signingConfig = signingConfigs.getByName\("debug"\)/&\n\1isMinifyEnabled = false\n\1isShrinkResources = false/' "$G"
+          fi
+          G=android/app/build.gradle
+          if [ -f "$G" ]; then
+            sed -i -E 's/^( *)signingConfig signingConfigs.debug/&\n\1minifyEnabled false\n\1shrinkResources false/' "$G"
+          fi
+          grep -nE 'buildTypes|release|signingConfig|Minify|minify|Shrink|shrink' android/app/build.gradle* || true
+
+      - run: flutter pub get
+      - run: dart run flutter_launcher_icons
+
+      - name: Pasang kunci tanda tangan tetap
+        env:
+          KS: ${{ secrets.APK_KEYSTORE }}
+        run: |
+          if [ -n "$KS" ]; then
+            mkdir -p ~/.android
+            echo "$KS" | base64 -d > ~/.android/debug.keystore
+            echo "Kunci tetap dipakai"
+          else
+            echo "Secret APK_KEYSTORE belum diisi, APK memakai kunci acak"
+          fi
+
+      - run: flutter build apk --release --build-number=${{ github.run_number }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slrt-apps-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
