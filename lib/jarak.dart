@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'sources_util.dart';
 
 /// Kalkulator jarak aman radiasi gamma (sumber titik, hukum kuadrat terbalik)
 /// berdasarkan Nilai Batas Dosis (NBD) Perka BAPETEN No. 4 Tahun 2013:
@@ -97,7 +98,7 @@ class _JarakPageState extends State<JarakPage> {
   Future<void> _loadLog() async {
     final p = await SharedPreferences.getInstance();
     try {
-      srcs = (jsonDecode(p.getString('sources') ?? '[]') as List)
+      srcs = (jsonDecode(await sourcesJson(p)) as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
           .where((m) => _num((m['actReal'] ?? '').toString()) != null)
           .toList();

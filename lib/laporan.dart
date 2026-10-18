@@ -7,6 +7,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'sync.dart';
 import 'tld.dart';
 import 'config.dart';
+import 'sources_util.dart';
+import 'photos.dart';
+import 'density.dart' show Rec;
 
 /// Laporan Kerja PPR bulanan (format bilingual Indonesia / 中文).
 const List<String> kJobTypes = [
@@ -48,6 +51,8 @@ class LapRec {
   String note;
   /// true = dibuat otomatis dari Radiation Log (diperbarui otomatis sampai diedit manual).
   bool auto;
+  /// Foto dokumentasi (path lokal atau link Drive).
+  List<String> photos;
   LapRec({
     String? id,
     String? date,
@@ -59,9 +64,11 @@ class LapRec {
     List<String>? workers,
     this.note = '-',
     this.auto = false,
+    List<String>? photos,
   })  : id = id ?? DateTime.now().microsecondsSinceEpoch.toString(),
         date = date ?? _iso(DateTime.now()),
-        workers = workers ?? [];
+        workers = workers ?? [],
+        photos = photos ?? [];
 
   String get month => date.length >= 7 ? date.substring(0, 7) : date;
 
@@ -76,6 +83,7 @@ class LapRec {
         workers: ((j['workers'] as List?) ?? []).map((e) => e.toString()).toList(),
         note: (j['note'] ?? '-').toString(),
         auto: j['auto'] == true,
+        photos: ((j['photos'] as List?) ?? []).map((e) => e.toString()).toList(),
       );
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -88,6 +96,7 @@ class LapRec {
         'workers': workers,
         'note': note,
         'auto': auto,
+        'photos': photos,
       };
   LapRec copy() => LapRec.fromJson(toJson());
 }
@@ -118,7 +127,7 @@ class LapStore extends ChangeNotifier {
     if ((meta['sheetUrl'] ?? '').isEmpty) meta['sheetUrl'] = people.meta['sheetUrl'] ?? '';
     if (kRadSheetUrl.isNotEmpty) meta['sheetUrl'] = kRadSheetUrl;
     try {
-      tags = ((jsonDecode(p!.getString('sources') ?? '[]') as List)
+      tags = ((jsonDecode(await sourcesJson(p!)) as List)
               .map((e) => ((e as Map)['tag'] ?? '').toString())
               .where((t) => t.isNotEmpty))
           .toList();
@@ -217,11 +226,21 @@ class LapStore extends ChangeNotifier {
         'period': lapPeriod(month),
         'jobTypes': kJobTypes,
         'workers': workerNames,
-        'rows': of(month).map((r) => {...r.toJson(), 'date': _dmy(r.date)}).toList(),
+        'rows': of(month)
+            .map((r) => {...r.toJson(), 'date': _dmy(r.date), 'photos': Photos.urls(r.photos)})
+            .toList(),
       };
 
   /// Satu tab per bulan; dikirim ulang otomatis setiap ada perubahan.
-  Future<void> autoSync() => sync.run(
+  Future<void> autoSync() async {
+    await Photos.init();
+    if ((meta['sheetUrl'] ?? '').isNotEmpty) {
+      await Photos.upload(recs.expand((r) => r.photos), 'Laporan Kerja');
+    }
+    return _syncNow();
+  }
+
+  Future<void> _syncNow() => sync.run(
       p,
       meta['sheetUrl'] ?? '',
       () => {
@@ -609,6 +628,31 @@ class _LapFormState extends State<LapForm> {
   late final TextEditingController loc, no, name, detail, note;
   final extra = TextEditingController();
   final Map<String, FocusNode> _focus = {};
+  static const String kOther = '__other__';
+  static const List<String> kEquipNames = ['Density Gauging', 'Level Gauging', 'XRF'];
+  String locSel = ''; // lokasi dari daftar sumber, atau kOther (isi manual)
+  Set<String> sel = {}; // tag yang dipilih
+  String nameSel = '';
+  bool nameTouched = false;
+
+  /// "303-DIT-0101,0201; 101-DX-0001" -> {303-DIT-0101, 303-DIT-0201, 101-DX-0001}
+  Set<String> _expand(String v) {
+    final out = <String>{};
+    for (final g in v.split(';')) {
+      final t = g.trim();
+      if (t.isEmpty) continue;
+      final parts = t.split(',');
+      final first = parts.first.trim();
+      out.add(first);
+      final i = first.lastIndexOf('-');
+      final pre = i > 0 ? first.substring(0, i + 1) : '';
+      for (final p in parts.skip(1)) {
+        final x = p.trim();
+        if (x.isNotEmpty) out.add(x.contains('-') ? x : '$pre$x');
+      }
+    }
+    return out;
+  }
 
   @override
   void initState() {
@@ -625,6 +669,32 @@ class _LapFormState extends State<LapForm> {
     name = TextEditingController(text: r.equipName);
     detail = TextEditingController(text: r.detail);
     note = TextEditingController(text: r.note);
+    final locs = widget.store.tags.map(_locOf).toSet();
+    if (r.loc.isEmpty) {
+      locSel = '';
+    } else if (locs.contains(r.loc)) {
+      locSel = r.loc;
+      final want = _expand(r.equipNo);
+      sel = widget.store.tags
+          .where((t) => _locOf(t) == r.loc && (want.contains(t) || want.contains(t.substring(r.loc.length + 1))))
+          .toSet();
+      if (sel.isEmpty && r.equipNo.isNotEmpty) locSel = kOther;
+    } else {
+      locSel = kOther;
+    }
+    nameSel = r.equipName.isEmpty ? '' : (kEquipNames.contains(r.equipName) ? r.equipName : kOther);
+    nameTouched = r.equipName.isNotEmpty;
+  }
+
+  void _toggleTag(String t, bool on) {
+    setState(() {
+      on ? sel.add(t) : sel.remove(t);
+      if (!nameTouched && sel.isNotEmpty) {
+        final n = _equipName(sel.toList());
+        nameSel = kEquipNames.contains(n) ? n : kOther;
+        if (nameSel == kOther) name.text = n;
+      }
+    });
   }
 
   List<String> _lastWorkers() {
@@ -754,19 +824,88 @@ class _LapFormState extends State<LapForm> {
             },
           ),
           const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-                flex: 2,
-                child: _auto('Lokasi · 子项号', loc, s.used((x) => x.loc), hint: 'mis. 303')),
-            const SizedBox(width: 8),
-            Expanded(
-                flex: 3,
-                child: _auto('No Peralatan · 位号', no, s.used((x) => x.equipNo, s.tags),
-                    hint: 'mis. 303-DIT-0101', onPick: _fillFromNo)),
-          ]),
-          const SizedBox(height: 12),
-          _auto('Nama Peralatan · 设备名称', name,
-              s.used((x) => x.equipName, const ['Density Gauging', 'Level Gauging', 'XRF'])),
+          Builder(builder: (context) {
+            final scheme = Theme.of(context).colorScheme;
+            final locs = s.tags.map(_locOf).toSet().toList()..sort();
+            final tagsHere = s.tags.where((t) => _locOf(t) == locSel).toList();
+            return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              DropdownButtonFormField<String>(
+                value: locSel.isEmpty ? null : locSel,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                    labelText: 'Lokasi · 子项号', border: OutlineInputBorder()),
+                items: [
+                  for (final l in locs)
+                    DropdownMenuItem(
+                        value: l, child: Text('$l  (${s.tags.where((t) => _locOf(t) == l).length} sumber)')),
+                  const DropdownMenuItem(value: kOther, child: Text('Other · 其他 (isi manual)')),
+                ],
+                onChanged: (v) => setState(() {
+                  if (v != locSel) sel = {};
+                  locSel = v ?? '';
+                }),
+              ),
+              const SizedBox(height: 10),
+              if (locSel == kOther) ...[
+                _auto('Lokasi lainnya · 其他位置', loc, s.used((x) => x.loc), hint: 'mis. 203-3'),
+                const SizedBox(height: 10),
+                _auto('No Peralatan · 位号', no, s.used((x) => x.equipNo), hint: 'mis. 125'),
+              ] else if (locSel.isNotEmpty) ...[
+                Row(children: [
+                  const Expanded(
+                      child: Text('No Peralatan · 位号 (pilih satu atau lebih)',
+                          style: TextStyle(fontWeight: FontWeight.w600))),
+                  TextButton(
+                    onPressed: () {
+                      if (sel.length == tagsHere.length) {
+                        setState(() => sel = {});
+                      } else {
+                        for (final t in tagsHere) {
+                          _toggleTag(t, true);
+                        }
+                      }
+                    },
+                    child: Text(sel.length == tagsHere.length && tagsHere.isNotEmpty ? 'Hapus pilihan 清除' : 'Pilih semua 全选'),
+                  ),
+                ]),
+                Wrap(spacing: 6, runSpacing: 4, children: [
+                  for (final t in tagsHere)
+                    FilterChip(
+                      label: Text(t.startsWith('$locSel-') ? t.substring(locSel.length + 1) : t),
+                      selected: sel.contains(t),
+                      onSelected: (v) => _toggleTag(t, v),
+                    ),
+                ]),
+                if (sel.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text('→ ${lapDetNames(s.tags.where(sel.contains).toList())}',
+                        style: TextStyle(fontSize: 12, color: scheme.outline)),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: nameSel.isEmpty ? null : nameSel,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                    labelText: 'Nama Peralatan · 设备名称', border: OutlineInputBorder()),
+                items: [
+                  for (final n in kEquipNames) DropdownMenuItem(value: n, child: Text(n)),
+                  const DropdownMenuItem(value: kOther, child: Text('Other · 其他 (isi manual)')),
+                ],
+                onChanged: (v) => setState(() {
+                  nameSel = v ?? '';
+                  nameTouched = true;
+                }),
+              ),
+              if (nameSel == kOther) ...[
+                const SizedBox(height: 10),
+                _auto('Nama Peralatan lainnya · 其他设备名称', name,
+                    s.used((x) => x.equipName).where((e) => !kEquipNames.contains(e)).toList(),
+                    hint: 'mis. MHWirth'),
+              ],
+            ]);
+          }),
           const SizedBox(height: 14),
           const Text('Jenis Pekerjaan · 任务类型', style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
@@ -781,6 +920,8 @@ class _LapFormState extends State<LapForm> {
             ),
           const SizedBox(height: 6),
           _auto('Rincian Tugas · 检修内容', detail, s.used((x) => x.detail), lines: 2),
+          const SizedBox(height: 14),
+          PhotoField(photos: r.photos, onChanged: (l) => setState(() => r.photos = l)),
           const SizedBox(height: 14),
           const Text('Pemelihara · 检修人', style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
@@ -820,6 +961,12 @@ class _LapFormState extends State<LapForm> {
             icon: const Icon(Icons.save_outlined),
             label: const Text('Simpan 保存'),
             onPressed: () {
+              if (locSel.isNotEmpty && locSel != kOther) {
+                loc.text = locSel;
+                no.text = lapDetNames(s.tags.where(sel.contains).toList());
+              }
+              if (nameSel.isNotEmpty && nameSel != kOther) name.text = nameSel;
+              if (nameSel.isEmpty) name.text = '';
               if (no.text.trim().isEmpty && name.text.trim().isEmpty && detail.text.trim().isEmpty) {
                 _snack(context, 'Isi minimal No/Nama Peralatan atau Rincian Tugas.\n请至少填写设备位号/名称或检修内容。');
                 return;
@@ -877,6 +1024,15 @@ String lapCompressTags(List<String> tags) {
       .join('; ');
 }
 
+/// "102-DX-0002A","102-DX-0002B" -> "DX-0002A,0002B" (nama peralatan tanpa kode wilayah)
+String lapDetNames(List<String> tags) {
+  final dets = tags.map((t) {
+    final l = _locOf(t);
+    return t.startsWith('$l-') ? t.substring(l.length + 1) : t;
+  }).toList();
+  return lapCompressTags(dets);
+}
+
 String _equipName(List<String> tags) {
   final s = <String>{};
   for (final t in tags) {
@@ -926,6 +1082,15 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
     return RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(d) ? d : fallback;
   }
 
+  final pics = <String, List<String>>{};
+  void addPics(String k, dynamic l) {
+    for (final x in ((l as List?) ?? [])) {
+      final v = x.toString();
+      final list = pics.putIfAbsent(k, () => []);
+      if (!list.contains(v)) list.add(v);
+    }
+  }
+
   read('sessions').forEach((month, v) {
     final ses = Map<String, dynamic>.from(v as Map);
     final sd = isoOf(ses['date'], '$month-01');
@@ -937,6 +1102,7 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
       final k = '${isoOf(m['date'], sd)}|${_locOf(tag)}';
       exp.putIfAbsent(k, () => {}).add(tag);
       who.putIfAbsent(k, () => {}).addAll(_names((m['rso'] ?? '').toString()));
+      addPics(k, m['photos']);
     }
   });
   read('maint').forEach((month, v) {
@@ -948,6 +1114,7 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
       final k = '${isoOf(m['date'], '$month-01')}|${_locOf(tag)}';
       mnt.putIfAbsent(k, () => {}).add(tag);
       who.putIfAbsent(k, () => {}).addAll(_names((m['worker'] ?? '').toString()));
+      addPics(k, m['photos']);
       final bad = _checkName.entries.where((c) => m[c.key] == 'X').map((c) => c.value).toList();
       final short = tag.contains('-') ? tag.substring(tag.lastIndexOf('-') + 1) : tag;
       if (bad.isNotEmpty) issues.putIfAbsent(k, () => []).add('$short: ${bad.join(', ')}');
@@ -974,6 +1141,7 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
         bt.putIfAbsent(k, () => {}).add(tag);
         btMark.putIfAbsent(k, () => {})[tag] = mark;
         who.putIfAbsent(k, () => {}).addAll(_names((m['person'] ?? '').toString()));
+        addPics(k, m['photos']);
       }
 
       if (cDay == oDay) {
@@ -985,16 +1153,44 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
     }
   } catch (_) {}
 
+  // Pengukuran density (kalibrasi detektor): per tanggal ukur & lokasi
+  final dns = <String, Set<String>>{};
+  final dnsBad = <String, List<String>>{};
+  try {
+    for (final e in (jsonDecode(p.getString('riwayat') ?? '[]') as List)) {
+      final m = Map<String, dynamic>.from(e as Map);
+      final ts = (m['ts'] as num?)?.toInt();
+      if (ts == null) continue;
+      final d = DateTime.fromMillisecondsSinceEpoch(ts);
+      final day =
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      final tag = (m['n'] ?? '').toString().trim();
+      final k = '$day|${_locOf(tag)}';
+      dns.putIfAbsent(k, () => {}).add(tag.isEmpty ? '-' : tag);
+      addPics(k, m['photos']);
+      bool bad = false;
+      try {
+        bad = Rec(m).bad; // aturan toleransi sama dengan modul Density
+      } catch (_) {}
+      if (bad) {
+        final short = tag.contains('-') ? tag.substring(tag.lastIndexOf('-') + 1) : tag;
+        dnsBad.putIfAbsent(k, () => []).add(short.isEmpty ? '-' : short);
+      }
+    }
+  } catch (_) {}
+
   final out = <LapRec>[];
-  for (final k in {...exp.keys, ...mnt.keys, ...bt.keys}) {
+  for (final k in {...exp.keys, ...mnt.keys, ...bt.keys, ...dns.keys}) {
     final date = k.split('|')[0];
     final loc = k.split('|')[1];
     final e = exp[k] ?? {};
     final m = mnt[k] ?? {};
     final b = bt[k] ?? {};
-    final tags = {...e, ...m, ...b}.toList()
+    final dn = (dns[k] ?? {}).where((t) => t != '-').toSet();
+    final hasDn = dns.containsKey(k);
+    final tags = {...e, ...m, ...b, ...dn}.toList()
       ..sort((a, b) => (order[a] ?? 9999).compareTo(order[b] ?? 9999));
-    final maintLike = m.isNotEmpty || b.isNotEmpty;
+    final maintLike = m.isNotEmpty || b.isNotEmpty || hasDn;
     final job = e.isNotEmpty && maintLike
         ? kJobTypes[2]
         : (maintLike ? kJobTypes[1] : kJobTypes[0]);
@@ -1004,17 +1200,21 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
       for (final mk in ['Buka/Tutup', 'Buka', 'Tutup'])
         if ((btMark[k] ?? {}).values.contains(mk))
           '${mk == 'Buka/Tutup' ? 'Buka/tutup' : mk} sumber radioaktif (${(btMark[k] ?? {}).values.where((v) => v == mk).length} sumber)',
+      if (hasDn) 'Pengukuran densitas / kalibrasi detektor (${(dns[k] ?? {}).length} detektor)',
     ].join(' & ');
     final src = [
       if (e.isNotEmpty) 'Log Book Paparan',
       if (m.isNotEmpty) 'Log Book Perawatan',
+      if (hasDn) 'Density',
     ].join(' & ');
+    final dBad = dnsBad[k] ?? [];
     final iss = issues[k] ?? [];
     final nts = notes[k] ?? [];
     final note = [
       if (src.isNotEmpty) 'Otomatis dari $src',
       if (m.isNotEmpty) iss.isEmpty ? 'kondisi bagus' : 'Tidak bagus: ${iss.join('; ')}',
       if (nts.isNotEmpty) 'Catatan: ${nts.join('; ')}',
+      if (hasDn) dBad.isEmpty ? 'densitas sesuai' : 'Perlu kalibrasi: ${dBad.join(', ')}',
       for (final mk in ['Buka/Tutup', 'Buka', 'Tutup'])
         if ((btMark[k] ?? {}).values.contains(mk)) mk,
     ].join(' · ');
@@ -1022,13 +1222,14 @@ List<LapRec> lapAutoFromRadiation(SharedPreferences p) {
       id: 'auto|$k',
       date: date,
       loc: loc,
-      equipNo: lapCompressTags(tags),
+      equipNo: lapDetNames(tags),
       equipName: _equipName(tags),
       job: job,
       detail: detail,
       workers: (who[k] ?? {}).toList(),
       note: note,
       auto: true,
+      photos: pics[k] ?? [],
     ));
   }
   return out;

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'laporan.dart' show LapStore;
 import 'bukatutup.dart';
+import 'photos.dart';
 import 'trefoil.dart';
 import 'config.dart';
 
@@ -255,6 +256,8 @@ class Store extends ChangeNotifier {
       map[m['tag'].toString()] = m;
     }
     for (final r in newRows) {
+      final old = map[r['tag'].toString()];
+      if (((r['photos'] as List?) ?? []).isEmpty && old?['photos'] != null) r['photos'] = old!['photos'];
       map[r['tag'].toString()] = r;
     }
     final ord = {for (final x in sources) x.tag: x.order};
@@ -291,6 +294,8 @@ class Store extends ChangeNotifier {
       map[m['tag'].toString()] = m;
     }
     for (final r in newRows) {
+      final old = map[r['tag'].toString()];
+      if (((r['photos'] as List?) ?? []).isEmpty && old?['photos'] != null) r['photos'] = old!['photos'];
       map[r['tag'].toString()] = r;
     }
     final ord = {for (final x in sources) x.tag: x.order};
@@ -343,6 +348,7 @@ class Store extends ChangeNotifier {
               'close': btDisp((r['close'] ?? '').toString()),
               'person': r['person'] ?? '',
               'note': r['note'] ?? '',
+              'photos': Photos.urls(((r['photos'] as List?) ?? []).map((e) => e.toString())),
             }
         ],
       };
@@ -353,7 +359,7 @@ class Store extends ChangeNotifier {
         'type': 'maintenance',
         'docNo': meta['maintDocNo'],
         'period': periodOfKey(k),
-        'rows': maint[k]?['rows'] ?? [],
+        'rows': _withUrls(maint[k]?['rows'] as List?),
       };
     }
     final s = sessions[key] ?? {};
@@ -363,8 +369,33 @@ class Store extends ChangeNotifier {
       'docNo': meta['docNo'],
       'revDate': meta['revDate'],
       'rev': meta['rev'],
-      'rows': s['rows'] ?? [],
+      'rows': _withUrls(s['rows'] as List?),
     };
+  }
+
+  /// Ganti path foto lokal dengan link Drive sebelum dikirim.
+  List<Map<String, dynamic>> _withUrls(List? rows) => [
+        for (final r in (rows ?? []))
+          {
+            ...Map<String, dynamic>.from(r as Map),
+            'photos': Photos.urls(((r['photos'] as List?) ?? []).map((e) => e.toString())),
+          }
+      ];
+
+  /// Semua foto lokal yang dipakai oleh satu kiriman.
+  List<String> _photosOf(String key) {
+    Iterable rows;
+    if (key.startsWith('b:')) {
+      rows = bt.where((r) => quarterOf((r['open'] ?? '').toString()) == key.substring(2));
+    } else if (key.startsWith('m:')) {
+      rows = (maint[key.substring(2)]?['rows'] as List?) ?? [];
+    } else {
+      rows = (sessions[key]?['rows'] as List?) ?? [];
+    }
+    return [
+      for (final r in rows)
+        for (final p in (((r as Map)['photos'] as List?) ?? [])) p.toString()
+    ];
   }
 
   Future<void> flush() async {
@@ -380,6 +411,8 @@ class Store extends ChangeNotifier {
                 ? maint.containsKey(key.substring(2))
                 : sessions.containsKey(key);
         if (exists) {
+          await Photos.upload(_photosOf(key),
+              key.startsWith('b:') ? 'Buka Tutup' : (key.startsWith('m:') ? 'Perawatan' : 'Paparan'));
           final res = await http
               .post(Uri.parse(sheetUrl),
                   headers: {'Content-Type': 'text/plain;charset=utf-8'},
@@ -589,12 +622,14 @@ class _CatatPageState extends State<CatatPage> {
   final rsoDefault = TextEditingController();
   final Map<String, RowState> rows = {};
   final Map<String, MaintRow> mrows = {};
+  final Map<String, List<String>> photos = {};
   String loc = '';
   String det = '';
 
   @override
   void initState() {
     super.initState();
+    Photos.init();
     final p = widget.store.p;
     loc = p.getString('loc') ?? '';
     det = p.getString('det') ?? '';
@@ -801,6 +836,12 @@ class _CatatPageState extends State<CatatPage> {
                 border: const OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 10),
+            PhotoField(
+              label: 'Foto paparan / perawatan · 照片',
+              photos: photos[s.tag] ?? const [],
+              onChanged: (l) => setState(() => photos[s.tag] = l),
+            ),
             const SizedBox(height: 4),
             Text('Pemeriksaan perawatan yang tidak dipilih tercatat sebagai *.\n未选择的维护检查项记录为 *。',
                 style: TextStyle(
@@ -845,6 +886,7 @@ class _CatatPageState extends State<CatatPage> {
           'meter': v(r.meter, false),
           'worker': v(r.worker, true),
           'rso': who(s),
+          if ((photos[s.tag] ?? []).isNotEmpty) 'photos': [...photos[s.tag]!],
         };
       }).toList();
       await store.saveRows(key, iso, def, newRows);
@@ -859,6 +901,7 @@ class _CatatPageState extends State<CatatPage> {
           for (final c in kChecks) c[0]: symOf(r.st[c[0]] ?? ''),
           'note': r.note.text.trim(),
           'worker': who(s),
+          if ((photos[s.tag] ?? []).isNotEmpty) 'photos': [...photos[s.tag]!],
         };
       }).toList();
       bad = mNew.where((r) => kChecks.any((c) => r[c[0]] == 'X')).length;
@@ -867,6 +910,7 @@ class _CatatPageState extends State<CatatPage> {
     for (final s in {...dirty, ...mDirty}) {
       rows.remove(s.tag);
       mrows.remove(s.tag);
+      photos.remove(s.tag);
     }
     if (!mounted) return;
     var next = '';

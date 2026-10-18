@@ -8,6 +8,7 @@ import 'sync.dart';
 import 'tld.dart';
 import 'i18n.dart';
 import 'config.dart';
+import 'sources_util.dart';
 
 const String kPdTitle = 'Kartu Dosis Pendose (Dosimeter Baca Langsung)';
 const List<String> kPdUnits = ['µSv', 'mSv', 'mR'];
@@ -112,7 +113,7 @@ class PdStore extends ChangeNotifier {
     if (kRadSheetUrl.isNotEmpty) meta['sheetUrl'] = kRadSheetUrl;
     if (!kPdUnits.contains(meta['unit'])) meta['unit'] = 'µSv';
     try {
-      tags = ((jsonDecode(p!.getString('sources') ?? '[]') as List)
+      tags = ((jsonDecode(await sourcesJson(p!)) as List)
               .map((e) => ((e as Map)['tag'] ?? '').toString())
               .where((t) => t.isNotEmpty))
           .toList();

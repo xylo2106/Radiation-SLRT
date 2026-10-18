@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
+import 'photos.dart';
 
 const double kTol = 4.0; // batas selisih detektor (%)
 const Color kBlue = Color(0xFF2563EB);
@@ -206,10 +207,16 @@ class Store extends ChangeNotifier {
     notifyListeners();
     try {
       while (queue.isNotEmpty) {
+        final item = Map<String, dynamic>.from(queue.first);
+        final local = ((item['photos'] as List?) ?? []).map((e) => e.toString()).toList();
+        if (local.isNotEmpty) {
+          await Photos.upload(local, 'Density');
+          item['photos'] = Photos.urls(local);
+        }
         final res = await http
             .post(Uri.parse(sheetUrl),
                 headers: {'Content-Type': 'text/plain;charset=utf-8'},
-                body: jsonEncode(queue.first))
+                body: jsonEncode(item))
             .timeout(const Duration(seconds: 30));
         // Apps Script menjawab 200 atau 302 (redirect) bila berhasil.
         if (res.statusCode >= 400) {
@@ -354,10 +361,12 @@ class _UkurPageState extends State<UkurPage> {
   final m = List.generate(3, (_) => TextEditingController());
   final c = List.generate(3, (_) => TextEditingController());
   final x = List.generate(3, (_) => TextEditingController());
+  List<String> photos = [];
 
   @override
   void initState() {
     super.initState();
+    Photos.init();
     tare.text = widget.store.p.getString('bejana_w') ?? '';
     vol.text = widget.store.p.getString('bejana_v') ?? '';
   }
@@ -475,6 +484,7 @@ class _UkurPageState extends State<UkurPage> {
     };
     final z = parseNum(dac.text);
     if (z != null) j['dac'] = z;
+    if (photos.isNotEmpty) j['photos'] = [...photos];
     final r = Rec(j);
     await widget.store.add(r);
     if (!mounted) return;
@@ -495,7 +505,7 @@ class _UkurPageState extends State<UkurPage> {
     for (final t in [...m, ...c, ...x, dac]) {
       t.clear();
     }
-    setState(() {});
+    setState(() => photos = []);
     widget.onSaved();
   }
 
@@ -577,6 +587,8 @@ class _UkurPageState extends State<UkurPage> {
         _field(cb, 'Check by (pisahkan dengan koma) · 检查人（逗号分隔）', text: true),
         const SizedBox(height: 12),
         _field(dac, 'Density setelah kalibrasi (opsional) · 校准后密度（可选）'),
+        const SizedBox(height: 12),
+        PhotoField(photos: photos, onChanged: (l) => setState(() => photos = l)),
         const SizedBox(height: 16),
         Row(children: [
           Expanded(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'photos.dart';
 import 'radiation.dart';
 
 /// Rekaman Buka/Tutup Sumber Radioaktif (No. Dok 29/RBT-DI-SLRT/I/X/2026).
@@ -429,6 +430,11 @@ class _BtFormState extends State<BtForm> {
             for (final n in kBtNotes)
               ActionChip(label: Text(n, style: const TextStyle(fontSize: 12)), onPressed: () => setState(() => note.text = n)),
           ]),
+          const SizedBox(height: 14),
+          PhotoField(
+            photos: ((r['photos'] as List?) ?? []).map((e) => e.toString()).toList(),
+            onChanged: (l) => setState(() => r['photos'] = l),
+          ),
           const SizedBox(height: 20),
           FilledButton.icon(
             icon: const Icon(Icons.save_outlined),
