@@ -70,6 +70,8 @@ class Hub {
     _Col('maint', 'maint', _Kind.month, folder: 'Perawatan'),
     _Col('pendose', 'pendose', _Kind.map, folder: 'Pendose'),
     _Col('mcu', 'mcu', _Kind.map, folder: 'MCU'),
+    // daftar akun login (nama, jabatan, PIN terenkripsi, admin) sama di semua HP
+    _Col('users', 'auth_users', _Kind.list, key: 'name', folder: 'Akun'),
   ];
 
   static String _fnv(String s) {
@@ -361,6 +363,7 @@ class Hub {
       await p.setString('hub_snap', jsonEncode(newSnap));
       await p.setInt('hub_rev', (body['rev'] as num?)?.toInt() ?? since);
 
+      if (got.any((e) => e['col'] == 'users' && e['device'] != device)) await Auth.load();
       if (applied > 0) {
         await LapStore.refreshFromRadiation(); // laporan otomatis dari data baru
         statSync(); // statistik di spreadsheet = gabungan semua HP

@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'config.dart';
+import 'sync_hub.dart';
+
 /// Login sederhana di HP: tiap pengguna punya nama, jabatan dan PIN.
 /// Nama pengguna yang login otomatis terisi sebagai petugas/PPR di
 /// Log Book Paparan, Perawatan, Buka/Tutup, Density dan Laporan Kerja
@@ -44,8 +47,8 @@ class Auth {
     }
     name = p.getString('auth_current') ?? '';
     if (!users.any((u) => u['name'] == name)) name = '';
-    // Belum ada admin (data lama): pengguna yang sedang login menjadi admin.
-    if (users.isNotEmpty && !users.any((u) => u['admin'] == '1') && name.isNotEmpty) {
+    // Data lama tanpa admin dengan satu akun saja: akun itu menjadi admin.
+    if (users.length == 1 && !users.any((u) => u['admin'] == '1') && name.isNotEmpty) {
       users.firstWhere((u) => u['name'] == name)['admin'] = '1';
       await _saveUsers();
     }
@@ -60,6 +63,23 @@ class Auth {
   static bool isAdminUser(String n) => users.any((u) => u['name'] == n && u['admin'] == '1');
   static int get adminCount => users.where((u) => u['admin'] == '1').length;
 
+  /// Username login: huruf kecil, angka, titik, garis bawah, strip.
+  static String slug(String n) =>
+      n.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '.').replaceAll(RegExp(r'[^a-z0-9._-]'), '');
+  static String usernameOf(Map<String, String> u) {
+    final x = (u['username'] ?? '').trim();
+    return x.isEmpty ? slug(u['name'] ?? '') : x;
+  }
+
+  static Map<String, String>? byUsername(String un) {
+    final k = un.trim().toLowerCase();
+    if (k.isEmpty) return null;
+    for (final u in users) {
+      if (usernameOf(u).toLowerCase() == k) return u;
+    }
+    return null;
+  }
+
   static bool hasPin(String n) => (users.firstWhere((u) => u['name'] == n, orElse: () => {})['pin'] ?? '').isNotEmpty;
 
   static bool check(String n, String pin) {
@@ -70,8 +90,11 @@ class Auth {
 
   static Future<void> login(String n) async {
     name = n;
-    role = users.firstWhere((u) => u['name'] == n, orElse: () => {})['role'] ?? '';
-    await (await _p()).setString('auth_current', n);
+    final u = users.firstWhere((u) => u['name'] == n, orElse: () => {});
+    role = u['role'] ?? '';
+    final p = await _p();
+    await p.setString('auth_current', n);
+    if (u.isNotEmpty) await p.setString('auth_last_username', usernameOf(u));
   }
 
   static Future<void> logout() async {
@@ -82,11 +105,19 @@ class Auth {
 
   /// Simpan akun. [oldName] untuk mengubah akun yang sudah ada; PIN kosong saat
   /// mengubah = PIN lama tetap dipakai.
-  static Future<void> addUser(String n, String r, String pin, {bool admin = false, String? oldName}) async {
+  static Future<void> addUser(String n, String r, String pin,
+      {bool admin = false, String? oldName, String username = ''}) async {
     final old = users.firstWhere((u) => u['name'] == (oldName ?? n), orElse: () => {});
-    final keepPin = pin.isEmpty && oldName != null ? (old['pin'] ?? '') : (pin.isEmpty ? '' : hash(pin));
+    var keepPin = pin.isEmpty && oldName != null ? (old['pin'] ?? '') : (pin.isEmpty ? '' : hash(pin));
+    if (!admin) keepPin = ''; // pengguna biasa masuk hanya dengan username
     users.removeWhere((u) => u['name'] == (oldName ?? n) || u['name'] == n);
-    users.add({'name': n, 'role': r, 'pin': keepPin, 'admin': admin ? '1' : ''});
+    users.add({
+      'name': n,
+      'username': username.isEmpty ? slug(n) : username,
+      'role': r,
+      'pin': keepPin,
+      'admin': admin ? '1' : '',
+    });
     if (oldName != null && name == oldName && n != oldName) {
       name = n;
       await (await _p()).setString('auth_current', n);
@@ -135,16 +166,67 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   bool loading = true;
+  bool offline = false; // daftar akun belum bisa diperiksa ke server
   String? picked;
   String pin = '';
   String error = '';
+  final userCtl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    Auth.load().then((_) {
-      if (mounted) setState(() => loading = false);
-    });
+    SharedPreferences.getInstance().then((p) => userCtl.text = p.getString('auth_last_username') ?? '');
+    _init();
+  }
+
+  @override
+  void dispose() {
+    userCtl.dispose();
+    super.dispose();
+  }
+
+  /// Ketik username -> langsung masuk. Akun admin diminta PIN.
+  Future<void> _login() async {
+    final un = userCtl.text.trim();
+    if (un.isEmpty) {
+      setState(() => error = 'Ketik username Anda · 请输入用户名');
+      return;
+    }
+    var u = Auth.byUsername(un);
+    if (u == null) {
+      // mungkin baru didaftarkan admin di HP lain: ambil daftar terbaru
+      setState(() => loading = true);
+      await Hub.sync();
+      await Auth.load();
+      u = Auth.byUsername(un);
+      if (!mounted) return;
+      setState(() => loading = false);
+    }
+    if (u == null) {
+      HapticFeedback.heavyImpact();
+      setState(() => error = 'Username tidak terdaftar. Hubungi admin.\n用户名未注册，请联系管理员。');
+      return;
+    }
+    error = '';
+    _pick(u['name'] ?? '');
+  }
+
+  /// HP baru: ambil daftar akun dari server dulu. Akun admin hanya boleh dibuat
+  /// bila di server benar-benar belum ada akun sama sekali.
+  Future<void> _init() async {
+    if (!loading || offline) {
+      setState(() {
+        loading = true;
+        offline = false;
+      });
+    }
+    await Auth.load();
+    if (Auth.users.isEmpty) {
+      final ok = await Hub.sync();
+      await Auth.load();
+      offline = !ok && Auth.users.isEmpty && kRadSheetUrl.trim().isNotEmpty;
+    }
+    if (mounted) setState(() => loading = false);
   }
 
   Future<void> _done(String n) async {
@@ -223,14 +305,18 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   const SizedBox(height: 26),
                   Text(picked == null ? 'Masuk · 登录' : 'Halo, $picked',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
                   Text(
                       picked == null
                           ? (Auth.users.isEmpty
-                              ? 'Buat akun pertama untuk mulai · 创建第一个账户'
-                              : 'Pilih nama Anda · 请选择您的名字')
-                          : 'Masukkan PIN · 请输入 PIN',
+                              ? (offline
+                                  ? 'Memerlukan internet untuk memeriksa akun · 需要网络检查账户'
+                                  : 'Buat akun admin untuk mulai · 创建管理员账户')
+                              : 'Ketik username dari admin · 输入管理员提供的用户名')
+                          : 'Akun admin · 管理员账户 — masukkan PIN · 请输入 PIN',
                       style: const TextStyle(color: Color(0xFFC9D3EE))),
                 ]),
               ),
@@ -241,45 +327,57 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   List<Widget> _userList() => [
-        for (final u in Auth.users)
+        if (Auth.users.isNotEmpty) ...[
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-            child: Material(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(18),
-                onTap: () => _pick(u['name'] ?? ''),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(children: [
-                    CircleAvatar(
-                        radius: 22,
-                        backgroundColor: _navy,
-                        child: Text(Auth.initials(u['name'] ?? ''),
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Row(children: [
-                          Flexible(
-                              child: Text(u['name'] ?? '',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
-                          if (u['admin'] == '1') const _AdminBadge(),
-                        ]),
-                        if ((u['role'] ?? '').isNotEmpty)
-                          Text(u['role']!, style: const TextStyle(fontSize: 12, color: Color(0xFF6B7390))),
-                      ]),
-                    ),
-                    Icon((u['pin'] ?? '').isEmpty ? Icons.chevron_right : Icons.lock_outline,
-                        color: const Color(0xFF6B7390)),
-                  ]),
-                ),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: TextField(
+              controller: userCtl,
+              autofocus: userCtl.text.isEmpty,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.go,
+              onSubmitted: (_) => _login(),
+              onChanged: (_) {
+                if (error.isNotEmpty) setState(() => error = '');
+              },
+              decoration: InputDecoration(
+                labelText: 'Username · 用户名',
+                hintText: 'mis. ferdinan',
+                prefixIcon: const Icon(Icons.person_outline),
+                filled: true,
+                fillColor: Colors.white,
+                errorText: error.isEmpty ? null : error,
+                errorMaxLines: 3,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
               ),
             ),
           ),
-        if (Auth.users.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  backgroundColor: _navy,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+              onPressed: _login,
+              icon: const Icon(Icons.login),
+              label: const Text('Masuk · 登录', style: TextStyle(fontSize: 16)),
+            ),
+          ),
+        ],
+        if (Auth.users.isEmpty && offline)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+              onPressed: _init,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Coba lagi · 重试'),
+            ),
+          ),
+        if (Auth.users.isEmpty && !offline)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: FilledButton.icon(
@@ -295,8 +393,10 @@ class _LoginPageState extends State<LoginPage> {
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
           child: Text(
               Auth.users.isEmpty
-                  ? 'Akun pertama menjadi admin. Hanya admin yang bisa mendaftarkan akun lain.\n第一个账户为管理员，只有管理员可以注册其他账户。'
-                  : 'Belum punya akun? Minta admin mendaftarkan nama Anda.\n没有账户？请联系管理员注册。',
+                  ? (offline
+                      ? 'Daftar akun belum bisa diambil dari server. Nyalakan internet lalu tekan Coba lagi.\n无法从服务器获取账户列表，请联网后重试。'
+                      : 'Belum ada akun di semua HP. Akun pertama menjadi admin; hanya admin yang bisa mendaftarkan akun lain.\n所有手机尚无账户。第一个账户为管理员，只有管理员可以注册其他账户。')
+                  : 'Belum punya username? Minta admin mendaftarkan Anda.\n没有用户名？请联系管理员注册。',
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 12, color: Color(0xFF6B7390))),
         ),
@@ -387,6 +487,8 @@ class _UserFormPageState extends State<UserFormPage> {
   final name = TextEditingController();
   final pin = TextEditingController();
   final pin2 = TextEditingController();
+  final uname = TextEditingController();
+  bool unameTouched = false;
   String role = Auth.kRoles.first;
   bool admin = false;
   List<String> suggest = [];
@@ -402,6 +504,8 @@ class _UserFormPageState extends State<UserFormPage> {
       final u = Auth.users.firstWhere((u) => u['name'] == widget.edit, orElse: () => {});
       if (Auth.kRoles.contains(u['role'])) role = u['role']!;
       admin = u['admin'] == '1';
+      uname.text = Auth.usernameOf(u);
+      unameTouched = true;
     }
     if (!widget.selfOnly) {
       Auth.workerNames().then((l) {
@@ -415,15 +519,22 @@ class _UserFormPageState extends State<UserFormPage> {
     name.dispose();
     pin.dispose();
     pin2.dispose();
+    uname.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
     final n = name.text.trim();
+    final un = Auth.slug(uname.text);
+    uname.text = un;
     final hadPin = _editing && Auth.hasPin(widget.edit!);
     String? err;
     if (n.isEmpty) {
       err = 'Isi nama lengkap · 请填写全名';
+    } else if (!RegExp(r'^[a-z0-9._-]{3,30}$').hasMatch(un)) {
+      err = 'Username 3–30 huruf kecil/angka tanpa spasi · 用户名须为 3–30 个小写字母/数字';
+    } else if (Auth.users.any((u) => u['name'] != widget.edit && Auth.usernameOf(u) == un)) {
+      err = 'Username sudah dipakai · 用户名已被使用';
     } else if (pin.text.isNotEmpty && !RegExp(r'^\d{4,6}$').hasMatch(pin.text)) {
       err = 'PIN harus 4–6 angka · PIN 须为 4–6 位数字';
     } else if (pin.text != pin2.text) {
@@ -439,7 +550,7 @@ class _UserFormPageState extends State<UserFormPage> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
       return;
     }
-    await Auth.addUser(n, role, pin.text, admin: admin, oldName: widget.edit);
+    await Auth.addUser(n, role, admin ? pin.text : '', admin: admin, oldName: widget.edit, username: un);
     if (mounted) Navigator.pop(context, true);
   }
 
@@ -457,6 +568,9 @@ class _UserFormPageState extends State<UserFormPage> {
           controller: name,
           enabled: !widget.selfOnly,
           textCapitalization: TextCapitalization.words,
+          onChanged: (v) {
+            if (!unameTouched) uname.text = Auth.slug(v.split(' ').first);
+          },
           decoration: const InputDecoration(
               labelText: 'Nama lengkap · 全名',
               hintText: 'mis. Ferdinan H S',
@@ -468,9 +582,29 @@ class _UserFormPageState extends State<UserFormPage> {
           const Text('Dari daftar pekerja TLD · 来自 TLD 人员名单', style: TextStyle(fontSize: 12)),
           const SizedBox(height: 4),
           Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final s in suggest) ActionChip(label: Text(s), onPressed: () => setState(() => name.text = s)),
+            for (final s in suggest)
+              ActionChip(
+                  label: Text(s),
+                  onPressed: () => setState(() {
+                        name.text = s;
+                        if (!unameTouched) uname.text = Auth.slug(s.split(' ').first);
+                      })),
           ]),
         ],
+        const SizedBox(height: 14),
+        TextField(
+          controller: uname,
+          enabled: !widget.selfOnly,
+          autocorrect: false,
+          enableSuggestions: false,
+          onChanged: (_) => unameTouched = true,
+          decoration: const InputDecoration(
+              labelText: 'Username untuk login · 登录用户名',
+              hintText: 'mis. ferdinan',
+              helperText: 'Huruf kecil/angka tanpa spasi. Berikan ke orangnya untuk login.',
+              prefixIcon: Icon(Icons.alternate_email),
+              border: OutlineInputBorder()),
+        ),
         const SizedBox(height: 14),
         DropdownButtonFormField<String>(
           value: role,
@@ -485,11 +619,18 @@ class _UserFormPageState extends State<UserFormPage> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: admin,
-            onChanged: (v) => setState(() => admin = v),
+            onChanged: (v) => setState(() {
+              admin = v;
+              if (!v) {
+                pin.clear();
+                pin2.clear();
+              }
+            }),
             title: const Text('Admin · 管理员'),
             subtitle: const Text('Boleh mendaftarkan & menghapus akun lain · 可注册和删除其他账户'),
           ),
         ],
+        if (admin) ...[
         const SizedBox(height: 14),
         TextField(
           controller: pin,
@@ -514,14 +655,15 @@ class _UserFormPageState extends State<UserFormPage> {
           decoration: const InputDecoration(
               labelText: 'Ulangi PIN · 再次输入 PIN', prefixIcon: Icon(Icons.lock_outline), border: OutlineInputBorder()),
         ),
+        ],
         const SizedBox(height: 8),
         Text(
           widget.firstAdmin
               ? 'Akun ini menjadi admin: hanya admin yang bisa mendaftarkan, mengubah dan menghapus akun orang lain.\n'
                   '此账户为管理员：只有管理员可以注册、修改和删除其他账户。'
-              : 'Nama ini otomatis tercatat sebagai petugas di Log Book Paparan, Perawatan, Buka/Tutup Sumber, '
-                  'Density dan Laporan Kerja. Di setiap form nama tetap bisa diubah manual.\n'
-                  '此名字将自动记录为各表单的工作人员，可在表单中手动修改。',
+              : 'Pengguna masuk cukup dengan mengetik username (tanpa PIN); akun admin memakai PIN. '
+                  'Nama otomatis tercatat sebagai petugas di setiap form dan tetap bisa diubah manual.\n'
+                  '普通用户只需输入用户名登录（无需 PIN），管理员账户需要 PIN。',
           style: const TextStyle(fontSize: 12, color: Color(0xFF6B7390)),
         ),
         const SizedBox(height: 20),
@@ -599,7 +741,7 @@ class _ManageUsersPageState extends State<ManageUsersPage> {
                 Flexible(child: Text(u['name'] ?? '', overflow: TextOverflow.ellipsis)),
                 if (u['admin'] == '1') const _AdminBadge(),
               ]),
-              subtitle: Text('${u['role'] ?? ''}${(u['pin'] ?? '').isEmpty ? ' · tanpa PIN' : ''}'),
+              subtitle: Text('@${Auth.usernameOf(u)} · ${u['role'] ?? ''}'),
               trailing: PopupMenuButton<String>(
                 onSelected: (v) => v == 'e' ? _form(edit: u['name']) : _remove(u['name'] ?? ''),
                 itemBuilder: (_) => const [
@@ -612,8 +754,8 @@ class _ManageUsersPageState extends State<ManageUsersPage> {
           ),
         const SizedBox(height: 8),
         const Text(
-          'Hanya admin yang bisa mendaftarkan akun baru. Pengguna biasa hanya bisa mengganti PIN-nya sendiri.\n'
-          '只有管理员可以注册新账户，普通用户只能修改自己的 PIN。',
+          'Hanya admin yang bisa mendaftarkan akun dan menentukan username. Pengguna masuk cukup dengan '
+          'mengetik username-nya.\n只有管理员可以注册账户并设定用户名，用户输入用户名即可登录。',
           style: TextStyle(fontSize: 12, color: Color(0xFF6B7390)),
         ),
       ]),
@@ -680,9 +822,10 @@ class ProfileButton extends StatelessWidget {
                 onChanged();
               },
             ),
+          if (Auth.isAdmin)
           ListTile(
             leading: const Icon(Icons.password_outlined),
-            title: Text(Auth.isAdmin ? 'Ubah akun saya · 修改我的账户' : 'Ganti PIN · 修改 PIN'),
+            title: const Text('Ubah akun saya / PIN · 修改我的账户'),
             onTap: () async {
               Navigator.pop(ctx);
               await Navigator.of(context).push(MaterialPageRoute(
