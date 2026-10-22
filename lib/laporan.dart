@@ -9,6 +9,7 @@ import 'tld.dart';
 import 'config.dart';
 import 'sources_util.dart';
 import 'photos.dart';
+import 'auth.dart';
 import 'density.dart' show Rec;
 import 'statistik.dart' show statSync;
 
@@ -664,7 +665,7 @@ class _LapFormState extends State<LapForm> {
     r = widget.rec ??
         LapRec(
           date: widget.month == cur ? _iso(now) : '${widget.month}-01',
-          workers: _lastWorkers(),
+          workers: Auth.name.isNotEmpty ? [Auth.name] : _lastWorkers(),
         );
     loc = TextEditingController(text: r.loc);
     no = TextEditingController(text: r.equipNo);

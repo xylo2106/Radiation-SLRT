@@ -11,6 +11,8 @@ import 'jarak.dart';
 import 'laporan.dart';
 import 'radiation.dart' as radiation;
 import 'statistik.dart';
+import 'auth.dart';
+import 'sync_hub.dart';
 import 'mcu.dart';
 import 'pendose.dart';
 import 'tld.dart';
@@ -24,6 +26,7 @@ const Color kInk = Color(0xFF0F1B3D);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  kAfterLogin = (_) => const ShellPage();
   runApp(const SlrtApp());
 }
 
@@ -62,11 +65,13 @@ class _SplashPageState extends State<SplashPage>
   @override
   void initState() {
     super.initState();
-    Timer(const Duration(milliseconds: 2200), () {
+    Timer(const Duration(milliseconds: 2200), () async {
+      await Auth.load();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 450),
-        pageBuilder: (_, __, ___) => const ShellPage(),
+        pageBuilder: (_, __, ___) =>
+            Auth.name.isEmpty ? LoginPage(next: (_) => const ShellPage()) : const ShellPage(),
         transitionsBuilder: (_, a, __, child) =>
             FadeTransition(opacity: a, child: child),
       ));
@@ -260,8 +265,16 @@ final List<MenuItem> kMenu = [
       (_) => const DocumentsPage(), '文件与法规', 'SOP、BAPETEN 许可证及法规'),
 ];
 
-void openMenu(BuildContext context, MenuItem m) {
-  Navigator.of(context).push(MaterialPageRoute(builder: m.page));
+/// Buka menu. Selama menu terbuka sinkron antar HP ditahan, lalu
+/// dijalankan lagi setelah menu ditutup.
+Future<void> openMenu(BuildContext context, MenuItem m) async {
+  Hub.moduleOpen = true;
+  try {
+    await Navigator.of(context).push(MaterialPageRoute(builder: m.page));
+  } finally {
+    Hub.moduleOpen = false;
+  }
+  await Hub.sync();
 }
 
 // ===================== Home =====================
@@ -272,7 +285,7 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> {
+class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   final pager = PageController(viewportFraction: 0.84);
   int page = 0;
   Timer? timer;
@@ -294,10 +307,28 @@ class _HomeTabState extends State<HomeTab> {
           duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
     });
     _loadSummary();
+    WidgetsBinding.instance.addObserver(this);
+    Hub.listen(_hubChanged);
+    Hub.startTimer();
+    Hub.sync();
+  }
+
+  /// Setelah data dari HP lain masuk, perbarui ringkasan Beranda.
+  void _hubChanged() {
+    if (!mounted) return;
+    if (!Hub.busy) _loadSummary();
+    setState(() {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !Hub.moduleOpen) Hub.sync();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    Hub.unlisten(_hubChanged);
     timer?.cancel();
     pager.dispose();
     super.dispose();
@@ -408,7 +439,7 @@ class _HomeTabState extends State<HomeTab> {
   }
 
   Future<void> _open(MenuItem m) async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: m.page));
+    await openMenu(context, m);
     _loadSummary();
   }
 
@@ -418,7 +449,10 @@ class _HomeTabState extends State<HomeTab> {
     final top = MediaQuery.of(context).padding.top;
     final summaries = [densSummary, radSummary, tldSummary, pdSummary, mcuSummary, lapSummary, 'Pekerjaan, capaian target & produktivitas · 工作与效率', 'NBD 20 / 1 mSv per tahun · Perka BAPETEN 4/2013', docSummary];
     return RefreshIndicator(
-      onRefresh: _loadSummary,
+      onRefresh: () async {
+        await Hub.sync();
+        await _loadSummary();
+      },
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
@@ -438,6 +472,8 @@ class _HomeTabState extends State<HomeTab> {
                 child: Row(children: [
                   Image.asset('assets/logo.png', height: 34),
                   const Spacer(),
+                  ProfileButton(onChanged: () => setState(() {})),
+                  const SizedBox(width: 8),
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white.withAlpha(150),
@@ -450,6 +486,35 @@ class _HomeTabState extends State<HomeTab> {
                     ),
                   ),
                 ]),
+              ),
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () => Hub.sync(),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                          color: Colors.white.withAlpha(170), borderRadius: BorderRadius.circular(20)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Hub.busy
+                            ? const SizedBox(
+                                width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                            : Icon(Hub.lastError.isEmpty ? Icons.devices_rounded : Icons.cloud_off_rounded,
+                                size: 14, color: Hub.lastError.isEmpty ? kNavy : kRed),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(Hub.status,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11.5, color: kNavy, fontWeight: FontWeight.w600)),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(height: 18),
               SizedBox(

@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
 import 'photos.dart';
+import 'auth.dart';
 import 'radiation.dart' show Picker;
 import 'laporan.dart' show LapStore;
 import 'sources_util.dart';
@@ -385,6 +386,7 @@ class _UkurPageState extends State<UkurPage> {
     super.initState();
     Photos.init();
     _loadTags();
+    cb.text = Auth.name; // petugas = nama yang login (bisa diubah)
     tare.text = widget.store.p.getString('bejana_w') ?? '';
     vol.text = widget.store.p.getString('bejana_v') ?? '';
   }
@@ -531,6 +533,7 @@ class _UkurPageState extends State<UkurPage> {
     for (final t in [tag, cb, dac, ...m, ...c, ...x]) {
       t.clear();
     }
+    cb.text = Auth.name;
     setState(() {
       selLoc = '';
       selDet = '';

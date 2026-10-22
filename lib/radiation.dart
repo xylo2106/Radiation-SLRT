@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'laporan.dart' show LapStore;
 import 'bukatutup.dart';
 import 'photos.dart';
+import 'auth.dart';
 import 'trefoil.dart';
 import 'config.dart';
 
@@ -633,7 +634,7 @@ class _CatatPageState extends State<CatatPage> {
     final p = widget.store.p;
     loc = p.getString('loc') ?? '';
     det = p.getString('det') ?? '';
-    rsoDefault.text = p.getString('rso_default') ?? '';
+    rsoDefault.text = whoDefault(p.getString('rso_default') ?? ''); // nama yang login
   }
 
   @override
@@ -1515,7 +1516,7 @@ class _MaintPageState extends State<MaintPage> {
   void initState() {
     super.initState();
     final p = widget.store.p;
-    workerDefault.text = p.getString('maint_worker') ?? '';
+    workerDefault.text = whoDefault(p.getString('maint_worker') ?? ''); // nama yang login
     loc = p.getString('maint_loc') ?? '';
     det = p.getString('maint_det') ?? '';
   }

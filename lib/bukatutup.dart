@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'photos.dart';
+import 'auth.dart';
 import 'radiation.dart';
 
 /// Rekaman Buka/Tutup Sumber Radioaktif (No. Dok 29/RBT-DI-SLRT/I/X/2026).
@@ -293,7 +294,7 @@ class _BtFormState extends State<BtForm> {
           'tag': '',
           'open': _isoDT(DateTime.now()),
           'close': '',
-          'person': (last?['person'] ?? '').toString(),
+          'person': whoDefault((last?['person'] ?? '').toString()),
           'note': '',
         };
     closed = (r['close'] ?? '').toString().isNotEmpty;

@@ -74,6 +74,9 @@ class Photos {
     return ok;
   }
 
+  /// Dipakai juga oleh sinkron antar HP.
+  static Future<String?> postJson(String url, Map<String, dynamic> data) => _postJson(url, data);
+
   /// POST ke Apps Script lalu ikuti redirect (302) untuk membaca jawabannya.
   static Future<String?> _postJson(String url, Map<String, dynamic> data) async {
     final c = http.Client();

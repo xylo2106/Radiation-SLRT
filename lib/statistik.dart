@@ -8,6 +8,7 @@ import 'laporan.dart' show LapRec, lapAutoFromRadiation, kJobTypes, kLapMonths;
 import 'sources_util.dart';
 import 'sync.dart';
 import 'config.dart';
+import 'sync_hub.dart';
 
 /// Statistik pekerjaan & produktivitas PPR, dihitung dari data di HP:
 /// Laporan Kerja (manual + otomatis), Log Book Paparan, Perawatan,
@@ -192,20 +193,44 @@ class _StatistikPageState extends State<StatistikPage> {
   bool yearMode = false;
   DateTime cur = DateTime(DateTime.now().year, DateTime.now().month);
 
+  void _onHub() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    Hub.listen(_onHub); // tampilkan status sinkron
     _load();
+  }
+
+  @override
+  void dispose() {
+    Hub.unlisten(_onHub);
+    super.dispose();
   }
 
   static String _two(int v) => v.toString().padLeft(2, '0');
   String _mk(DateTime d) => '${d.year}-${_two(d.month)}';
 
-  Future<void> _load() async {
+  Future<void> _load({bool pull = true}) async {
     final p = await SharedPreferences.getInstance();
+    await p.reload();
     final d = await _loadData(p);
     if (mounted) setState(() => data = d);
-    statSync(); // perbarui file "SLRT - Statistik" di spreadsheet
+    if (!pull) {
+      statSync();
+      return;
+    }
+    // tampilkan data di HP dulu, lalu tarik data terbaru dari HP lain
+    final ok = await Hub.sync(readOnly: true);
+    if (!mounted) return;
+    if (ok && Hub.lastPulled > 0) {
+      await _load(pull: false);
+    } else {
+      setState(() {});
+      statSync(); // perbarui file "SLRT - Statistik" di spreadsheet
+    }
   }
 
   bool _inPeriod(String isoDate) {
@@ -244,6 +269,18 @@ class _StatistikPageState extends State<StatistikPage> {
           ? const Center(child: CircularProgressIndicator())
           : ListView(padding: const EdgeInsets.all(16), children: [
               _periodBar(scheme),
+              const SizedBox(height: 6),
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Hub.busy
+                    ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(Hub.lastError.isEmpty ? Icons.devices_rounded : Icons.cloud_off_rounded,
+                        size: 14, color: scheme.outline),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text('Gabungan data semua HP · 所有手机数据汇总\n${Hub.status}',
+                      textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: scheme.outline)),
+                ),
+              ]),
               const SizedBox(height: 12),
               ..._content(d, scheme),
             ]),
