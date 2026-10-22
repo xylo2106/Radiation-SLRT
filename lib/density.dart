@@ -365,7 +365,7 @@ class _UkurPageState extends State<UkurPage> {
   final x = List.generate(3, (_) => TextEditingController());
   List<String> photos = [];
   List<String> srcTags = []; // tag dari data sumber, urut sesuai daftar
-  String loc = '', det = '';
+  String selLoc = '', selDet = ''; // pilihan lokasi & detektor
 
   Future<void> _loadTags() async {
     try {
@@ -530,8 +530,8 @@ class _UkurPageState extends State<UkurPage> {
       t.clear();
     }
     setState(() {
-      loc = '';
-      det = '';
+      selLoc = '';
+      selDet = '';
     });
   }
 
@@ -552,17 +552,17 @@ class _UkurPageState extends State<UkurPage> {
         if (srcTags.isNotEmpty) ...[
           Picker(
             tags: srcTags,
-            loc: loc,
-            det: det,
-            onChanged: (l, d) => setState(() {
-              loc = l;
-              det = d;
-              tag.text = d; // tag lengkap, mis. 101-DX-0001
+            loc: selLoc,
+            det: selDet,
+            onChanged: (l, t) => setState(() {
+              selLoc = l;
+              selDet = t;
+              tag.text = t; // tag lengkap, mis. 101-DX-0001
             }),
           ),
           const SizedBox(height: 12),
         ],
-        if (srcTags.isEmpty || det.isEmpty) ...[
+        if (srcTags.isEmpty || selDet.isEmpty) ...[
           _field(tag, srcTags.isEmpty ? 'Tag Number' : 'Tag Number (ketik manual · 手动输入)', text: true),
           const SizedBox(height: 12),
         ],

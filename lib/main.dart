@@ -10,6 +10,7 @@ import 'documents.dart';
 import 'jarak.dart';
 import 'laporan.dart';
 import 'radiation.dart' as radiation;
+import 'statistik.dart';
 import 'mcu.dart';
 import 'pendose.dart';
 import 'tld.dart';
@@ -251,6 +252,8 @@ final List<MenuItem> kMenu = [
       Icons.health_and_safety_rounded, (_) => const McuPage(), '工作人员健康监测卡', '每位人员年度体检结果'),
   MenuItem('Laporan Kerja PPR', 'Laporan kegiatan pemeriksaan & maintenance bulanan',
       Icons.assignment_rounded, (_) => const LaporanPage(), 'PPR 工作报告', '月度检查与维护工作报告'),
+  MenuItem('Statistik Kerja', 'Statistik pekerjaan & produktivitas PPR', Icons.bar_chart_rounded,
+      (_) => const StatistikPage(), '工作统计', 'PPR 工作与效率统计'),
   MenuItem('Jarak Aman Radiasi', 'Hitung jarak aman pekerja & non pekerja radiasi', Icons.social_distance_rounded,
       (_) => const JarakPage(), '辐射安全距离', '计算工作人员与公众安全距离'),
   MenuItem('Dokumen & Regulasi', 'SOP, izin BAPETEN, dan peraturan', Icons.description_rounded,
@@ -413,7 +416,7 @@ class _HomeTabState extends State<HomeTab> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final top = MediaQuery.of(context).padding.top;
-    final summaries = [densSummary, radSummary, tldSummary, pdSummary, mcuSummary, lapSummary, 'NBD 20 / 1 mSv per tahun · Perka BAPETEN 4/2013', docSummary];
+    final summaries = [densSummary, radSummary, tldSummary, pdSummary, mcuSummary, lapSummary, 'Pekerjaan, capaian target & produktivitas · 工作与效率', 'NBD 20 / 1 mSv per tahun · Perka BAPETEN 4/2013', docSummary];
     return RefreshIndicator(
       onRefresh: _loadSummary,
       child: ListView(
