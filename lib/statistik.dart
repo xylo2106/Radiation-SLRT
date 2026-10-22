@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'density.dart' show Rec;
 import 'laporan.dart' show LapRec, lapAutoFromRadiation, kJobTypes, kLapMonths;
 import 'sources_util.dart';
+import 'sync.dart';
+import 'config.dart';
 
 /// Statistik pekerjaan & produktivitas PPR, dihitung dari data di HP:
 /// Laporan Kerja (manual + otomatis), Log Book Paparan, Perawatan,
@@ -28,22 +30,10 @@ class _Data {
   int btOpen = 0; // sumber yang masih terbuka
 }
 
-class _StatistikPageState extends State<StatistikPage> {
-  _Data? data;
-  bool yearMode = false;
-  DateTime cur = DateTime(DateTime.now().year, DateTime.now().month);
+String _two2(int v) => v.toString().padLeft(2, '0');
+String _mkOf(DateTime d) => '${d.year}-${_two2(d.month)}';
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  static String _two(int v) => v.toString().padLeft(2, '0');
-  String _mk(DateTime d) => '${d.year}-${_two(d.month)}';
-
-  Future<void> _load() async {
-    final p = await SharedPreferences.getInstance();
+Future<_Data> _loadData(SharedPreferences p) async {
     final d = _Data();
     Map<String, dynamic> read(String k) {
       try {
@@ -103,7 +93,7 @@ class _StatistikPageState extends State<StatistikPage> {
         final m = Map<String, dynamic>.from(e as Map);
         final ts = (m['ts'] as num?)?.toInt();
         if (ts == null) continue;
-        final k = _mk(DateTime.fromMillisecondsSinceEpoch(ts));
+        final k = _mkOf(DateTime.fromMillisecondsSinceEpoch(ts));
         bool bad = false;
         try {
           bad = Rec(m).bad;
@@ -126,7 +116,96 @@ class _StatistikPageState extends State<StatistikPage> {
       }
     } catch (_) {}
 
+    return d;
+}
+
+
+/// Isi kiriman untuk file "SLRT - Statistik": satu tab per tahun.
+Map<String, dynamic> _statBody(_Data d, int year) {
+  final total = d.tags.length;
+  final ms = [for (var i = 1; i <= 12; i++) '$year-${_two2(i)}'];
+  final months = <Map<String, dynamic>>[];
+  final workers = <String, List<int>>{}; // nama -> jumlah pekerjaan per bulan
+  final wDays = <String, Set<String>>{};
+  final locs = <String, List<int>>{};
+  for (var i = 0; i < 12; i++) {
+    final k = ms[i];
+    final laps = d.laps.where((r) => r.date.startsWith(k)).toList();
+    final days = laps.map((r) => r.date).toSet();
+    final job = [for (final j in kJobTypes) laps.where((r) => r.job == j).length];
+    for (final r in laps) {
+      for (final w in r.workers.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet()) {
+        workers.putIfAbsent(w, () => List.filled(12, 0))[i]++;
+        wDays.putIfAbsent(w, () => {}).add(r.date);
+      }
+      final l = r.loc.trim().isEmpty ? '-' : r.loc.trim();
+      locs.putIfAbsent(l, () => List.filled(12, 0))[i]++;
+    }
+    months.add({
+      'month': kLapMonths[i],
+      'jobs': laps.length,
+      'days': days.length,
+      'byJob': job,
+      'exp': d.expTags[k]?.length ?? 0,
+      'mnt': d.mntTags[k]?.length ?? 0,
+      'notInst': d.notInst[k]?.length ?? 0,
+      'densOk': d.densOk[k] ?? 0,
+      'densBad': d.densBad[k] ?? 0,
+      'bt': d.btCount[k] ?? 0,
+      'mntBad': d.mntBad[k] ?? 0,
+    });
+  }
+  return {
+    'type': 'statistik',
+    'year': year,
+    'totalSources': total,
+    'jobTypes': kJobTypes,
+    'btOpen': d.btOpen,
+    'months': months,
+    'workers': [
+      for (final e in workers.entries) {'name': e.key, 'jobs': e.value, 'days': wDays[e.key]?.length ?? 0}
+    ],
+    'locs': [for (final e in locs.entries) {'loc': e.key, 'jobs': e.value}],
+  };
+}
+
+final AutoSync _statSync = AutoSync('statistik_synced');
+
+/// Kirim statistik (tahun-tahun yang ada datanya) ke spreadsheet; hanya tahun yang berubah.
+Future<void> statSync() async {
+  try {
+    final url = kRadSheetUrl.trim();
+    if (url.isEmpty) return;
+    final p = await SharedPreferences.getInstance();
+    final d = await _loadData(p);
+    final years = <int>{DateTime.now().year};
+    for (final r in d.laps) {
+      final y = int.tryParse(r.date.length >= 4 ? r.date.substring(0, 4) : '');
+      if (y != null) years.add(y);
+    }
+    await _statSync.run(p, url, () => {for (final y in years) '$y': _statBody(d, y)}, () {});
+  } catch (_) {}
+}
+
+class _StatistikPageState extends State<StatistikPage> {
+  _Data? data;
+  bool yearMode = false;
+  DateTime cur = DateTime(DateTime.now().year, DateTime.now().month);
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  static String _two(int v) => v.toString().padLeft(2, '0');
+  String _mk(DateTime d) => '${d.year}-${_two(d.month)}';
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    final d = await _loadData(p);
     if (mounted) setState(() => data = d);
+    statSync(); // perbarui file "SLRT - Statistik" di spreadsheet
   }
 
   bool _inPeriod(String isoDate) {

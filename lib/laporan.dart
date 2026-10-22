@@ -10,6 +10,7 @@ import 'config.dart';
 import 'sources_util.dart';
 import 'photos.dart';
 import 'density.dart' show Rec;
+import 'statistik.dart' show statSync;
 
 /// Laporan Kerja PPR bulanan (format bilingual Indonesia / 中文).
 const List<String> kJobTypes = [
@@ -237,7 +238,8 @@ class LapStore extends ChangeNotifier {
     if ((meta['sheetUrl'] ?? '').isNotEmpty) {
       await Photos.upload(recs.expand((r) => r.photos), 'Laporan Kerja');
     }
-    return _syncNow();
+    await _syncNow();
+    statSync(); // file "SLRT - Statistik"
   }
 
   Future<void> _syncNow() => sync.run(

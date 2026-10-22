@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
 import 'photos.dart';
 import 'radiation.dart' show Picker;
+import 'laporan.dart' show LapStore;
 import 'sources_util.dart';
 
 const double kTol = 4.0; // batas selisih detektor (%)
@@ -167,6 +168,7 @@ class Store extends ChangeNotifier {
     recs.insert(0, r);
     await _saveRecs();
     notifyListeners();
+    LapStore.refreshFromRadiation(); // Laporan Kerja otomatis + Statistik
     if (sheetUrl.isNotEmpty) {
       queue.add(r.j);
       await _saveQueue();
