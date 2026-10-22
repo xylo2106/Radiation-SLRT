@@ -17,6 +17,7 @@ import 'mcu.dart';
 import 'pendose.dart';
 import 'tld.dart';
 import 'trefoil.dart';
+import 'sources_util.dart';
 
 // Warna dari logo PT SLRT: biru navy dan merah.
 const Color kNavy = Color(0xFF16295E);
@@ -44,6 +45,13 @@ class SlrtApp extends StatelessWidget {
           brightness: Brightness.dark,
           useMaterial3: true),
       home: const SplashPage(),
+      builder: (context, child) {
+        final mq = MediaQuery.of(context);
+        return MediaQuery(
+          data: mq.copyWith(textScaler: mq.textScaler.clamp(minScaleFactor: 0.85, maxScaleFactor: 1.15)),
+          child: child ?? const SizedBox(),
+        );
+      },
     );
   }
 }
@@ -202,7 +210,11 @@ class _ShellPageState extends State<ShellPage> {
             ],
           ),
           child: Row(children: [
-            _navItem(0, Icons.home_rounded, 'Home 首页'),
+            _navItem(0, Icons.home_rounded, 'Beranda 首页'),
+            _navItem(-1, Icons.insights_rounded, 'Statistik 统计', onTap: () {
+              final i = kMenu.indexWhere((m) => m.title == 'Statistik Kerja');
+              if (i >= 0) openMenu(context, kMenu[i]);
+            }),
             _navItem(1, Icons.info_outline_rounded, 'Informasi 信息'),
           ]),
         ),
@@ -210,20 +222,22 @@ class _ShellPageState extends State<ShellPage> {
     );
   }
 
-  Widget _navItem(int i, IconData icon, String label) {
+  Widget _navItem(int i, IconData icon, String label, {VoidCallback? onTap}) {
     final on = tab == i;
     final c = on ? kNavy : Theme.of(context).colorScheme.outline;
     return Expanded(
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => setState(() => tab = i),
+        onTap: onTap ?? () => setState(() => tab = i),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, color: c, size: 28),
+            Icon(icon, color: c, size: 26),
             Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    color: c, fontWeight: on ? FontWeight.w600 : FontWeight.w400)),
+                    fontSize: 12, color: c, fontWeight: on ? FontWeight.w700 : FontWeight.w400)),
           ]),
         ),
       ),
@@ -296,6 +310,8 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   String mcuSummary = 'Memuat… · 加载中…';
   String pdSummary = 'Memuat… · 加载中…';
   String lapSummary = 'Memuat… · 加载中…';
+  // target & peringatan bulan ini (Beranda)
+  int tTotal = 0, tExp = 0, tMnt = 0, tDens = 0, tDensBad = 0, tOpen = 0, tMntBad = 0;
 
   @override
   void initState() {
@@ -435,7 +451,50 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     } catch (_) {
       docSummary = 'Belum ada dokumen · 暂无文件';
     }
+    await _loadTargets(p);
     if (mounted) setState(() {});
+  }
+
+  Future<void> _loadTargets(SharedPreferences p) async {
+    final now = DateTime.now();
+    final mk = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    tTotal = tExp = tMnt = tDens = tDensBad = tOpen = tMntBad = 0;
+    try {
+      tTotal = (jsonDecode(await sourcesJson(p)) as List).length;
+    } catch (_) {}
+    try {
+      final s = (jsonDecode(p.getString('sessions') ?? '{}') as Map)[mk];
+      for (final r in ((s as Map?)?['rows'] as List? ?? [])) {
+        final m = r as Map;
+        final a = (m['surface'] ?? '').toString().trim(), b = (m['meter'] ?? '').toString().trim();
+        if (!(a == '-' && b == '-') && (a.isNotEmpty || b.isNotEmpty)) tExp++;
+      }
+    } catch (_) {}
+    try {
+      final s = (jsonDecode(p.getString('maint') ?? '{}') as Map)[mk];
+      for (final r in ((s as Map?)?['rows'] as List? ?? [])) {
+        tMnt++;
+        tMntBad += (r as Map).values.where((x) => x == 'X').length;
+      }
+    } catch (_) {}
+    try {
+      for (final e in (jsonDecode(p.getString('riwayat') ?? '[]') as List)) {
+        final m = Map<String, dynamic>.from(e as Map);
+        final ts = (m['ts'] as num?)?.toInt();
+        if (ts == null) continue;
+        final d = DateTime.fromMillisecondsSinceEpoch(ts);
+        if (d.year != now.year || d.month != now.month) continue;
+        tDens++;
+        try {
+          if (density.Rec(m).bad) tDensBad++;
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
+      for (final e in (jsonDecode(p.getString('bukatutup') ?? '[]') as List)) {
+        if (((e as Map)['close'] ?? '').toString().isEmpty) tOpen++;
+      }
+    } catch (_) {}
   }
 
   Future<void> _open(MenuItem m) async {
@@ -443,210 +502,326 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     _loadSummary();
   }
 
+  static const List<String> _short = [
+    'Density', 'Radiation Log', 'Dosis TLD', 'Pendose', 'Kesehatan', 'Laporan Kerja', 'Statistik', 'Jarak Aman', 'Dokumen'
+  ];
+  static const List<Color> _tint = [
+    Color(0xFF0F766E), Color(0xFFB45309), Color(0xFF6D28D9), Color(0xFF0369A1), Color(0xFFBE123C),
+    kNavy, Color(0xFF15803D), Color(0xFFC2410C), Color(0xFF475569)
+  ];
+  static const _days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+  static const _months = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+
+  String _shortOf(int i) => i < _short.length ? _short[i] : kMenu[i].title;
+  Color _tintOf(int i) => i < _tint.length ? _tint[i] : kNavy;
+  void _openTitle(String t) {
+    final i = kMenu.indexWhere((m) => m.title == t);
+    if (i >= 0) _open(kMenu[i]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final bg = dark ? const Color(0xFF10131D) : const Color(0xFFF3F5FA);
+    final card = dark ? const Color(0xFF1B2032) : Colors.white;
     final top = MediaQuery.of(context).padding.top;
+    final now = DateTime.now();
     final summaries = [densSummary, radSummary, tldSummary, pdSummary, mcuSummary, lapSummary, 'Pekerjaan, capaian target & produktivitas · 工作与效率', 'NBD 20 / 1 mSv per tahun · Perka BAPETEN 4/2013', docSummary];
-    return RefreshIndicator(
-      onRefresh: () async {
-        await Hub.sync();
-        await _loadSummary();
-      },
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          // ---------- header gradasi + banner ----------
+
+    BoxDecoration box() => BoxDecoration(
+          color: card,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: dark ? null : const [BoxShadow(color: Color(0x1416295E), blurRadius: 18, offset: Offset(0, 6))],
+        );
+
+    return ColoredBox(
+      color: bg,
+      child: RefreshIndicator(
+        onRefresh: () async {
+          await Hub.sync();
+          await _loadSummary();
+        },
+        child: ListView(padding: EdgeInsets.zero, children: [
+          // ---------- header ----------
           Container(
+            padding: EdgeInsets.fromLTRB(18, top + 12, 18, 80),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFFFFFFFF), Color(0xFFE4EAF6), Color(0xFFB7C6E6)],
-              ),
+                  begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F1F4D), kNavy, kSky]),
             ),
-            padding: EdgeInsets.only(top: top + 12, bottom: 18),
-            child: Column(children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(children: [
-                  Image.asset('assets/logo.png', height: 34),
-                  const Spacer(),
-                  ProfileButton(onChanged: () => setState(() {})),
-                  const SizedBox(width: 8),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withAlpha(150),
-                      shape: BoxShape.circle,
-                    ),
-                    child: IconButton(
-                      tooltip: 'Muat ulang ringkasan · 刷新摘要',
-                      icon: const Icon(Icons.refresh_rounded, color: kNavy),
-                      onPressed: _loadSummary,
-                    ),
-                  ),
-                ]),
-              ),
-              const SizedBox(height: 10),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(20),
-                    onTap: () => Hub.sync(),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                          color: Colors.white.withAlpha(170), borderRadius: BorderRadius.circular(20)),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        Hub.busy
-                            ? const SizedBox(
-                                width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
-                            : Icon(Hub.lastError.isEmpty ? Icons.devices_rounded : Icons.cloud_off_rounded,
-                                size: 14, color: Hub.lastError.isEmpty ? kNavy : kRed),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(Hub.status,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11.5, color: kNavy, fontWeight: FontWeight.w600)),
-                        ),
-                      ]),
-                    ),
-                  ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                  child: Image.asset('assets/logo.png', height: 22),
                 ),
-              ),
+                const Spacer(),
+                ProfileButton(onChanged: () => setState(() {})),
+              ]),
               const SizedBox(height: 18),
-              SizedBox(
-                height: 214,
-                child: PageView.builder(
-                  controller: pager,
-                  itemCount: kMenu.length,
-                  onPageChanged: (i) => setState(() => page = i),
-                  itemBuilder: (_, i) => BannerCard(
-                    item: kMenu[i],
-                    summary: summaries[i],
-                    index: i,
-                    onTap: () => _open(kMenu[i]),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(kMenu.length, (i) {
-                  final on = i == page;
-                  return AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    margin: const EdgeInsets.symmetric(horizontal: 3),
-                    width: on ? 26 : 9,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: on ? kRed : kNavy.withAlpha(60),
-                      borderRadius: BorderRadius.circular(4),
+              Text(
+                  '${_days[now.weekday - 1]}, ${now.day} ${_months[now.month - 1]} ${now.year} · ${now.year}年${now.month}月${now.day}日',
+                  style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 12.5)),
+              const SizedBox(height: 2),
+              Text(Auth.name.isEmpty ? 'Selamat bekerja' : 'Halo, ${Auth.name}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () => Hub.sync(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                  decoration: BoxDecoration(color: Colors.white.withAlpha(36), borderRadius: BorderRadius.circular(20)),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Hub.busy
+                        ? const SizedBox(
+                            width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Hub.lastError.isEmpty ? const Color(0xFF4ADE80) : const Color(0xFFFF8A8A))),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(Hub.status,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white, fontSize: 12)),
                     ),
-                  );
-                }),
+                  ]),
+                ),
               ),
             ]),
           ),
 
-          // ---------- grid menu ----------
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 22, 12, 6),
-            child: GridView.count(
-              crossAxisCount: 3,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 8,
-              childAspectRatio: 0.66,
-              children: [
-                for (final m in kMenu)
-                  InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () => _open(m),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: 72,
-                          height: 72,
-                          child: Stack(alignment: Alignment.center, children: [
-                            Positioned(
-                              left: 4,
-                              top: 0,
-                              child: Container(
-                                width: 52,
-                                height: 60,
-                                decoration: BoxDecoration(
-                                  color: kSky.withAlpha(55),
-                                  borderRadius: const BorderRadius.only(
-                                    topLeft: Radius.circular(30),
-                                    topRight: Radius.circular(30),
-                                    bottomLeft: Radius.circular(30),
-                                    bottomRight: Radius.circular(8),
-                                  ),
-                                ),
-                              ),
+          Transform.translate(
+            offset: const Offset(0, -62),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // ---------- target bulan ini ----------
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: box(),
+                  child: Column(children: [
+                    Row(children: [
+                      Expanded(
+                        child: Text('Target ${_months[now.month - 1]} · 本月目标',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                      ),
+                      InkWell(
+                        onTap: () => _openTitle('Statistik Kerja'),
+                        child: const Padding(
+                          padding: EdgeInsets.all(4),
+                          child: Text('Statistik ›',
+                              style: TextStyle(color: kSky, fontWeight: FontWeight.w600, fontSize: 12.5)),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      Expanded(
+                          child: _ring(tTotal == 0 ? 0 : tExp / tTotal, '${tTotal == 0 ? 0 : (tExp * 100 / tTotal).round()}%',
+                              'Paparan', '$tExp/$tTotal sumber', scheme)),
+                      Expanded(
+                          child: _ring(tTotal == 0 ? 0 : tMnt / tTotal, '${tTotal == 0 ? 0 : (tMnt * 100 / tTotal).round()}%',
+                              'Perawatan', '$tMnt/$tTotal sumber', scheme)),
+                      Expanded(
+                          child: _ring(tDens == 0 ? 0 : (tDens - tDensBad) / tDens, '${tDens - tDensBad}/$tDens', 'Density',
+                              tDens == 0 ? 'belum ada' : 'sesuai', scheme,
+                              color: kSky)),
+                    ]),
+                  ]),
+                ),
+                const SizedBox(height: 12),
+
+                // ---------- peringatan ----------
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  if (tDensBad > 0)
+                    _alert(Icons.warning_amber_rounded, '$tDensBad detektor perlu kalibrasi', const Color(0xFFFDE8EA),
+                        const Color(0xFFA11826)),
+                  tOpen > 0
+                      ? _alert(Icons.lock_open_rounded, '$tOpen sumber masih terbuka', const Color(0xFFFFF3D6),
+                          const Color(0xFF8A5A00))
+                      : _alert(Icons.lock_outline_rounded, 'Semua sumber tertutup', const Color(0xFFDFF6E8),
+                          const Color(0xFF13703D)),
+                  if (tMntBad > 0)
+                    _alert(Icons.build_circle_outlined, '$tMntBad temuan perawatan', const Color(0xFFFFF3D6),
+                        const Color(0xFF8A5A00)),
+                  if (tTotal > 0 && tExp < tTotal)
+                    _alert(Icons.radar_rounded, '${tTotal - tExp} sumber belum diukur', const Color(0xFFE5EBFA),
+                        kNavy),
+                ]),
+                const SizedBox(height: 16),
+
+                // ---------- aksi cepat ----------
+                Row(children: [
+                  _quick(kTrefoil, 'Catat\nPaparan', const [Color(0xFFF59E0B), Color(0xFFD97706)],
+                      () => _openTitle('Radiation Log')),
+                  _quick(Icons.science_rounded, 'Ukur\nDensity', const [Color(0xFF14B8A6), Color(0xFF0F766E)],
+                      () => _openTitle('Density SLRT')),
+                  _quick(Icons.assignment_rounded, 'Laporan\nKerja', const [kSky, kNavy],
+                      () => _openTitle('Laporan Kerja PPR')),
+                  _quick(Icons.social_distance_rounded, 'Jarak\nAman', const [Color(0xFFEF4444), Color(0xFFB91C1C)],
+                      () => _openTitle('Jarak Aman Radiasi')),
+                ]),
+                const SizedBox(height: 18),
+
+                // ---------- semua modul ----------
+                const Padding(
+                  padding: EdgeInsets.only(left: 4, bottom: 10),
+                  child: Text('Semua modul · 全部模块', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                ),
+                GridView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: kMenu.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3, mainAxisSpacing: 10, crossAxisSpacing: 10, mainAxisExtent: 112),
+                  itemBuilder: (_, i) {
+                    final m = kMenu[i];
+                    final c = _tintOf(i);
+                    return Material(
+                      color: card,
+                      borderRadius: BorderRadius.circular(18),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: () => _open(m),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+                          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                            Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(color: c.withAlpha(30), borderRadius: BorderRadius.circular(14)),
+                              child: Center(child: menuIcon(m.icon, size: 24, color: c)),
                             ),
-                            menuIcon(m.icon, size: 40, color: kNavy),
+                            const SizedBox(height: 7),
+                            Text(_shortOf(i),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+                            if (m.zh.isNotEmpty)
+                              Text(m.zh,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(fontSize: 10.5, color: scheme.outline)),
                           ]),
                         ),
-                        const SizedBox(height: 6),
-                        Text(m.title,
-                            textAlign: TextAlign.center,
-                            maxLines: 3,
-                            style: const TextStyle(fontSize: 12.5, height: 1.2)),
-                        if (m.zh.isNotEmpty)
-                          Text(m.zh,
-                              textAlign: TextAlign.center,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 10.5, height: 1.2, color: Theme.of(context).colorScheme.outline)),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 18),
 
-          // ---------- ringkasan ----------
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF0F3FA).withAlpha(
-                  Theme.of(context).brightness == Brightness.dark ? 30 : 255),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Ringkasan · 摘要',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
-                for (var i = 0; i < kMenu.length; i++)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: CircleAvatar(
-                      backgroundColor: kNavy.withAlpha(30),
-                      child: menuIcon(kMenu[i].icon, size: 22, color: kNavy),
+                // ---------- ringkasan ----------
+                Container(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 6, 6),
+                  decoration: box(),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Padding(
+                      padding: EdgeInsets.only(left: 2, bottom: 4),
+                      child: Text('Ringkasan · 摘要', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                     ),
-                    title: Text(kMenu[i].biTitle,
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text(summaries[i]),
-                    trailing: Icon(Icons.chevron_right, color: scheme.outline),
-                    onTap: () => _open(kMenu[i]),
-                  ),
-              ],
+                    for (var i = 0; i < kMenu.length; i++)
+                      ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.only(right: 4),
+                        leading: Container(
+                          width: 36,
+                          height: 36,
+                          decoration:
+                              BoxDecoration(color: _tintOf(i).withAlpha(28), borderRadius: BorderRadius.circular(11)),
+                          child: Center(child: menuIcon(kMenu[i].icon, size: 20, color: _tintOf(i))),
+                        ),
+                        title: Text(_shortOf(i), style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                        subtitle: Text(i < summaries.length ? summaries[i] : '',
+                            maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                        trailing: Icon(Icons.chevron_right, color: scheme.outline),
+                        onTap: () => _open(kMenu[i]),
+                      ),
+                  ]),
+                ),
+                const SizedBox(height: 60),
+              ]),
             ),
           ),
-          const SizedBox(height: 120),
-        ],
+        ]),
       ),
     );
   }
+
+  Widget _ring(double v, String center, String label, String sub, ColorScheme scheme, {Color? color}) {
+    final c = color ?? (v >= 1 ? const Color(0xFF22C55E) : (v >= 0.5 ? const Color(0xFFF59E0B) : const Color(0xFFEF4444)));
+    return Column(children: [
+      SizedBox(
+        width: 72,
+        height: 72,
+        child: Stack(alignment: Alignment.center, children: [
+          SizedBox(
+            width: 68,
+            height: 68,
+            child: CircularProgressIndicator(
+              value: v.clamp(0.0, 1.0).toDouble(),
+              strokeWidth: 8,
+              color: c,
+              backgroundColor: const Color(0xFFE8ECF5),
+            ),
+          ),
+          Text(center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        ]),
+      ),
+      const SizedBox(height: 6),
+      Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+      Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: scheme.outline)),
+    ]);
+  }
+
+  Widget _alert(IconData icon, String text, Color bg, Color fg) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 16, color: fg),
+          const SizedBox(width: 6),
+          Text(text, style: TextStyle(color: fg, fontWeight: FontWeight.w600, fontSize: 12)),
+        ]),
+      );
+
+  Widget _quick(IconData icon, String label, List<Color> g, VoidCallback onTap) => Expanded(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: g),
+                  boxShadow: [BoxShadow(color: g.last.withAlpha(70), blurRadius: 10, offset: const Offset(0, 4))],
+                ),
+                child: Center(child: menuIcon(icon, size: 28, color: Colors.white)),
+              ),
+              const SizedBox(height: 6),
+              Text(label,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, height: 1.2)),
+            ]),
+          ),
+        ),
+      );
 }
 
 class BannerCard extends StatelessWidget {
