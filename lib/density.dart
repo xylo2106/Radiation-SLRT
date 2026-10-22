@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
 import 'photos.dart';
+import 'radiation.dart' show Picker;
+import 'sources_util.dart';
 
 const double kTol = 4.0; // batas selisih detektor (%)
 const Color kBlue = Color(0xFF2563EB);
@@ -362,11 +364,25 @@ class _UkurPageState extends State<UkurPage> {
   final c = List.generate(3, (_) => TextEditingController());
   final x = List.generate(3, (_) => TextEditingController());
   List<String> photos = [];
+  List<String> srcTags = []; // tag dari data sumber, urut sesuai daftar
+  String loc = '', det = '';
+
+  Future<void> _loadTags() async {
+    try {
+      final list = (jsonDecode(await sourcesJson(widget.store.p)) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .where((m) => (m['tag'] ?? '').toString().isNotEmpty)
+          .toList()
+        ..sort((a, b) => ((a['order'] as num?) ?? 9999).compareTo((b['order'] as num?) ?? 9999));
+      if (mounted) setState(() => srcTags = list.map((m) => m['tag'].toString()).toList());
+    } catch (_) {}
+  }
 
   @override
   void initState() {
     super.initState();
     Photos.init();
+    _loadTags();
     tare.text = widget.store.p.getString('bejana_w') ?? '';
     vol.text = widget.store.p.getString('bejana_v') ?? '';
   }
@@ -513,7 +529,10 @@ class _UkurPageState extends State<UkurPage> {
     for (final t in [tag, cb, dac, ...m, ...c, ...x]) {
       t.clear();
     }
-    setState(() {});
+    setState(() {
+      loc = '';
+      det = '';
+    });
   }
 
   @override
@@ -530,8 +549,23 @@ class _UkurPageState extends State<UkurPage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _field(tag, 'Tag Number', text: true),
-        const SizedBox(height: 12),
+        if (srcTags.isNotEmpty) ...[
+          Picker(
+            tags: srcTags,
+            loc: loc,
+            det: det,
+            onChanged: (l, d) => setState(() {
+              loc = l;
+              det = d;
+              tag.text = d; // tag lengkap, mis. 101-DX-0001
+            }),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (srcTags.isEmpty || det.isEmpty) ...[
+          _field(tag, srcTags.isEmpty ? 'Tag Number' : 'Tag Number (ketik manual · 手动输入)', text: true),
+          const SizedBox(height: 12),
+        ],
         Row(children: [
           Expanded(
             child: _field(tare, 'Berat bejana (g) · 容器重量',
